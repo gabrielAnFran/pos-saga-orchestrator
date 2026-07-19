@@ -103,7 +103,7 @@ func buildCommandPayload(command string, osID uuid.UUID, ctx map[string]any) map
 		}
 		return p
 	case CommandRefundPayment:
-		p := map[string]any{}
+		p := map[string]any{"os_id": osID.String()}
 		if v, ok := ctx["payment_id"]; ok {
 			p["payment_id"] = v
 		}
@@ -113,7 +113,7 @@ func buildCommandPayload(command string, osID uuid.UUID, ctx map[string]any) map
 		p["reason"] = reasonOrDefault(ctx, "execution failed")
 		return p
 	case CommandCancelBudget:
-		p := map[string]any{}
+		p := map[string]any{"os_id": osID.String()}
 		if v, ok := ctx["budget_id"]; ok {
 			p["budget_id"] = v
 		}
