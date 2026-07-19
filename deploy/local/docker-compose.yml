@@ -1,0 +1,288 @@
+# Local dev/demo stack for all 4 POS microservices.
+#
+# NOTE: as of writing, the sibling repos (../../../pos-os-service,
+# ../../../pos-billing-service, ../../../pos-production-service) only
+# contain early scaffolding (go.mod + a few domain files) — no
+# Dockerfile, no README documenting their build-arg/TARGET convention
+# yet, since they're being built concurrently by other agents. This
+# compose file is written to the best of our ability from the shared
+# spec: ports 8081/8082/8083, the env var names below, and the
+# `TARGET` build-arg convention used by this repo's own Dockerfile are
+# authoritative per that spec and are not expected to change, but this
+# file has NOT been live-verified against the sibling repos' actual
+# Dockerfiles. A human should do the final `docker-compose up` pass
+# once all 4 repos are complete, and adjust build contexts/dockerfiles
+# here if any sibling deviated from the shared convention.
+name: pos-microservices-local
+
+networks:
+  pos-net: {}
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports: ["5672:5672", "15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [pos-net]
+
+  os-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: os_service
+      POSTGRES_USER: os
+      POSTGRES_PASSWORD: os
+    ports: ["5433:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U os -d os_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [pos-net]
+
+  billing-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: billing_service
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+    ports: ["5434:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing -d billing_service"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [pos-net]
+
+  saga-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: saga_orchestrator
+      POSTGRES_USER: saga
+      POSTGRES_PASSWORD: saga
+    ports: ["5435:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saga -d saga_orchestrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [pos-net]
+
+  production-mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports: ["27017:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [pos-net]
+
+  production-mongo-init:
+    image: mongo:7
+    depends_on:
+      production-mongo:
+        condition: service_healthy
+    command: >
+      mongosh --host production-mongo:27017 --quiet --eval
+      "try { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'production-mongo:27017'}]}) } catch (e) { if (!e.message.includes('already initialized')) { throw e } }"
+    networks: [pos-net]
+    restart: "no"
+
+  # See NOTE at top of file: adjust build context/dockerfile if
+  # pos-billing-service's mock MercadoPago server ends up living
+  # elsewhere or under its own Dockerfile.
+  mp-mock:
+    build:
+      context: ../../../pos-billing-service
+      dockerfile: Dockerfile
+      args:
+        TARGET: tests/mock-mp
+    ports: ["9999:9999"]
+    networks: [pos-net]
+
+  os-service:
+    build:
+      context: ../../../pos-os-service
+      args:
+        TARGET: server
+    depends_on:
+      os-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      OS_DB_DSN: postgres://os:os@os-postgres:5432/os_service?sslmode=disable
+      OS_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OS_PORT: "8081"
+    ports: ["8081:8081"]
+    networks: [pos-net]
+
+  os-service-worker:
+    build:
+      context: ../../../pos-os-service
+      args:
+        TARGET: worker
+    depends_on:
+      os-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      OS_DB_DSN: postgres://os:os@os-postgres:5432/os_service?sslmode=disable
+      OS_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    networks: [pos-net]
+
+  os-service-dispatcher:
+    build:
+      context: ../../../pos-os-service
+      args:
+        TARGET: outbox-dispatcher
+    depends_on:
+      os-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      OS_DB_DSN: postgres://os:os@os-postgres:5432/os_service?sslmode=disable
+      OS_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    networks: [pos-net]
+
+  billing-service:
+    build:
+      context: ../../../pos-billing-service
+      args:
+        TARGET: server
+    depends_on:
+      billing-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mp-mock:
+        condition: service_started
+    environment:
+      BILLING_DB_DSN: postgres://billing:billing@billing-postgres:5432/billing_service?sslmode=disable
+      BILLING_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      BILLING_PORT: "8082"
+      MP_BASE_URL: http://mp-mock:9999
+    ports: ["8082:8082"]
+    networks: [pos-net]
+
+  billing-service-worker:
+    build:
+      context: ../../../pos-billing-service
+      args:
+        TARGET: worker
+    depends_on:
+      billing-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mp-mock:
+        condition: service_started
+    environment:
+      BILLING_DB_DSN: postgres://billing:billing@billing-postgres:5432/billing_service?sslmode=disable
+      BILLING_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      MP_BASE_URL: http://mp-mock:9999
+    networks: [pos-net]
+
+  billing-service-dispatcher:
+    build:
+      context: ../../../pos-billing-service
+      args:
+        TARGET: outbox-dispatcher
+    depends_on:
+      billing-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      BILLING_DB_DSN: postgres://billing:billing@billing-postgres:5432/billing_service?sslmode=disable
+      BILLING_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    networks: [pos-net]
+
+  production-service:
+    build:
+      context: ../../../pos-production-service
+      args:
+        TARGET: server
+    depends_on:
+      production-mongo-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PRODUCTION_MONGO_URI: mongodb://production-mongo:27017/production?replicaSet=rs0
+      PRODUCTION_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      PRODUCTION_PORT: "8083"
+    ports: ["8083:8083"]
+    networks: [pos-net]
+
+  production-service-worker:
+    build:
+      context: ../../../pos-production-service
+      args:
+        TARGET: worker
+    depends_on:
+      production-mongo-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      PRODUCTION_MONGO_URI: mongodb://production-mongo:27017/production?replicaSet=rs0
+      PRODUCTION_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    networks: [pos-net]
+
+  saga-orchestrator:
+    build:
+      context: ../..
+      args:
+        TARGET: server
+    depends_on:
+      saga-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      SAGA_DB_DSN: postgres://saga:saga@saga-postgres:5432/saga_orchestrator?sslmode=disable
+      SAGA_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      SAGA_PORT: "8084"
+      OS_SERVICE_URL: http://os-service:8081
+    ports: ["8084:8084"]
+    networks: [pos-net]
+
+  saga-orchestrator-worker:
+    build:
+      context: ../..
+      args:
+        TARGET: worker
+    depends_on:
+      saga-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      SAGA_DB_DSN: postgres://saga:saga@saga-postgres:5432/saga_orchestrator?sslmode=disable
+      SAGA_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OS_SERVICE_URL: http://os-service:8081
+    networks: [pos-net]
+
+  saga-orchestrator-dispatcher:
+    build:
+      context: ../..
+      args:
+        TARGET: outbox-dispatcher
+    depends_on:
+      saga-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      SAGA_DB_DSN: postgres://saga:saga@saga-postgres:5432/saga_orchestrator?sslmode=disable
+      SAGA_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      SAGA_DISPATCH_INTERVAL_MS: "500"
+    networks: [pos-net]

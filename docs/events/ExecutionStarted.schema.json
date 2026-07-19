@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pos.local/events/ExecutionStarted.schema.json",
+  "title": "ExecutionStarted",
+  "type": "object",
+  "required": ["event_id","event_name","event_version","occurred_at","correlation_id","payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_name": { "const": "ExecutionStarted" },
+    "event_version": { "type": "integer", "minimum": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "correlation_id": { "type": "string" },
+    "saga_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["os_id"]
+    }
+  }
+}
