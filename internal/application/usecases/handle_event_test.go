@@ -87,11 +87,18 @@ func (f *fakeProcessedRepo) MarkProcessed(ctx context.Context, eventID uuid.UUID
 }
 
 type fakeNotifier struct {
-	calledFor []uuid.UUID
+	calledFor    []uuid.UUID
+	syncedStates []string
 }
 
 func (f *fakeNotifier) NotifyCompleted(ctx context.Context, osID uuid.UUID) error {
 	f.calledFor = append(f.calledFor, osID)
+	return nil
+}
+
+func (f *fakeNotifier) SyncStatus(ctx context.Context, osID uuid.UUID, target string) error {
+	f.calledFor = append(f.calledFor, osID)
+	f.syncedStates = append(f.syncedStates, target)
 	return nil
 }
 
@@ -146,7 +153,15 @@ func TestHandle_HappyPath_ReachesCompleted(t *testing.T) {
 	s, err := sagas.FindByOSID(context.Background(), osID)
 	require.NoError(t, err)
 	assert.Equal(t, saga.StateCompleted, s.State)
-	assert.Equal(t, []uuid.UUID{osID}, notifier.calledFor)
+	// Notifier is called once per saga transition that has an order-status
+	// mapping (BUDGET_REQUESTED, AWAITING_APPROVAL, PAYMENT_REQUESTED,
+	// EXECUTION_REQUESTED, IN_EXECUTION, COMPLETED), always for this osID,
+	// ending with the order synced to COMPLETED.
+	require.NotEmpty(t, notifier.calledFor)
+	for _, id := range notifier.calledFor {
+		assert.Equal(t, osID, id)
+	}
+	assert.Equal(t, "COMPLETED", notifier.syncedStates[len(notifier.syncedStates)-1])
 
 	// Every non-terminal step in the happy path except BudgetGenerated,
 	// ExecutionStarted and ExecutionCompleted emits exactly one command.

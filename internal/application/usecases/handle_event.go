@@ -91,7 +91,35 @@ func (h *HandleEvent) handleOSCreated(ctx context.Context, osID uuid.UUID, ev me
 		return fmt.Errorf("persisting new saga: %w", err)
 	}
 	slog.Info("saga created", "saga_id", next.ID, "os_id", osID, "state", next.State)
+	h.syncOrderStatus(ctx, osID, next.State)
 	return nil
+}
+
+// orderStatusForSagaState maps saga states to the OS Service order status
+// they imply, for the best-effort post-commit sync in syncOrderStatus.
+// States with no natural order-status counterpart (compensation substates
+// already handled by OS Service's own CancelOSCommand consumer) are
+// intentionally omitted.
+var orderStatusForSagaState = map[string]string{
+	saga.StateBudgetRequested:    "BUDGETING",
+	saga.StateAwaitingApproval:   "AWAITING_APPROVAL",
+	saga.StatePaymentRequested:   "PAYING",
+	saga.StateExecutionRequested: "PAID",
+	saga.StateInExecution:        "IN_EXECUTION",
+	saga.StateCompleted:          "COMPLETED",
+}
+
+// syncOrderStatus best-effort walks the order forward to mirror the
+// saga's new state. Saga state in saga_instances/saga_history remains
+// the durable source of truth regardless of this call's outcome.
+func (h *HandleEvent) syncOrderStatus(ctx context.Context, osID uuid.UUID, sagaState string) {
+	target, ok := orderStatusForSagaState[sagaState]
+	if !ok || h.OSNotifier == nil {
+		return
+	}
+	if err := h.OSNotifier.SyncStatus(ctx, osID, target); err != nil {
+		slog.Warn("failed to sync order status", "os_id", osID, "target", target, "error", err)
+	}
 }
 
 func (h *HandleEvent) applyAndPersist(ctx context.Context, current saga.SagaInstance, ev messaging.Event, eventID uuid.UUID) error {
@@ -114,15 +142,7 @@ func (h *HandleEvent) applyAndPersist(ctx context.Context, current saga.SagaInst
 	}
 	slog.Info("saga transitioned", "saga_id", current.ID, "from", current.State, "to", next.State, "event_name", ev.EventName)
 
-	if current.State == saga.StateInExecution && ev.EventName == saga.EventExecutionCompleted && next.State == saga.StateCompleted {
-		// Best-effort, post-commit: saga state is already durably
-		// COMPLETED regardless of this notification's outcome.
-		if h.OSNotifier != nil {
-			if err := h.OSNotifier.NotifyCompleted(ctx, current.OSID); err != nil {
-				slog.Warn("failed to notify os-service of completion", "os_id", current.OSID, "error", err)
-			}
-		}
-	}
+	h.syncOrderStatus(ctx, current.OSID, next.State)
 
 	return nil
 }

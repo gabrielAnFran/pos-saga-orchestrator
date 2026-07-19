@@ -2,7 +2,7 @@
 # server (default), worker, outbox-dispatcher.
 ARG TARGET=server
 
-FROM golang:1.24 AS build
+FROM golang:1.25-bookworm AS build
 ARG TARGET
 WORKDIR /src
 COPY go.mod go.sum ./

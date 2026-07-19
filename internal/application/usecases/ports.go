@@ -28,8 +28,10 @@ type ProcessedEventRepository interface {
 }
 
 // OSNotifier is the best-effort synchronous callback to OS Service made
-// when a saga reaches COMPLETED. Kept as a narrow interface so tests can
-// assert it was (or wasn't) called without spinning up HTTP.
+// after every saga transition to keep the order's own status mirroring
+// saga progress. Kept as a narrow interface so tests can assert it was
+// (or wasn't) called without spinning up HTTP.
 type OSNotifier interface {
 	NotifyCompleted(ctx context.Context, osID uuid.UUID) error
+	SyncStatus(ctx context.Context, osID uuid.UUID, target string) error
 }

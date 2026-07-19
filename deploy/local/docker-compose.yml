@@ -21,7 +21,11 @@ networks:
 services:
   rabbitmq:
     image: rabbitmq:3-management-alpine
-    ports: ["5672:5672", "15672:15672"]
+    # Host ports shifted by 1 (5673/15673) to avoid clashing with the
+    # monolith's workshop-rabbitmq container, which may run in parallel
+    # on this machine. Internal service-to-service traffic still uses
+    # the default 5672 via the container hostname "rabbitmq".
+    ports: ["5673:5672", "15673:15672"]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -156,7 +160,7 @@ services:
     build:
       context: ../../../pos-billing-service
       args:
-        TARGET: server
+        TARGET: cmd/server
     depends_on:
       billing-postgres:
         condition: service_healthy
@@ -176,7 +180,7 @@ services:
     build:
       context: ../../../pos-billing-service
       args:
-        TARGET: worker
+        TARGET: cmd/worker
     depends_on:
       billing-postgres:
         condition: service_healthy
@@ -194,7 +198,7 @@ services:
     build:
       context: ../../../pos-billing-service
       args:
-        TARGET: outbox-dispatcher
+        TARGET: cmd/outbox-dispatcher
     depends_on:
       billing-postgres:
         condition: service_healthy
@@ -209,7 +213,7 @@ services:
     build:
       context: ../../../pos-production-service
       args:
-        TARGET: server
+        CMD: server
     depends_on:
       production-mongo-init:
         condition: service_completed_successfully
@@ -226,7 +230,7 @@ services:
     build:
       context: ../../../pos-production-service
       args:
-        TARGET: worker
+        CMD: worker
     depends_on:
       production-mongo-init:
         condition: service_completed_successfully
