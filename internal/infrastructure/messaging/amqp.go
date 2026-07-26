@@ -114,6 +114,13 @@ func (c *Conn) DeclareServiceQueue(svc string, routingKeys []string) (string, er
 			return "", err
 		}
 	}
+	// The retry queue's TTL-expiry dead-letters back to EventsExchange using
+	// the routing key the message entered the retry queue with (svc+".retry"),
+	// not its original event routing key. Bind the main queue to that key too
+	// so retried messages are actually redelivered instead of being dropped.
+	if err := c.ch.QueueBind(q, svc+".retry", EventsExchange, false, nil); err != nil {
+		return "", err
+	}
 	return q, nil
 }
 
