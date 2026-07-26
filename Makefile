@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-bdd coverage lint docker-server docker-worker docker-dispatcher run-server run-worker run-dispatcher tidy
+.PHONY: build test test-unit test-bdd test-integration coverage lint docker-server docker-worker docker-dispatcher run-server run-worker run-dispatcher tidy
 
 build:
 	go build ./...
@@ -11,8 +11,12 @@ test-unit:
 test-bdd:
 	go test ./tests/bdd/...
 
+# Requires Docker: testcontainers-go spins up its own Postgres and RabbitMQ.
+test-integration:
+	go test -tags=integration ./tests/integration/...
+
 coverage:
-	go test ./internal/domain/saga/... ./internal/application/usecases/... -coverprofile=coverage.out
+	go test -tags=integration ./... -coverprofile=coverage.out -coverpkg=./...
 	go tool cover -func=coverage.out | tail -1
 
 lint:

@@ -237,6 +237,52 @@ func TestHandle_CompensationChain_ExecutionFailed_ViaRefund(t *testing.T) {
 	assert.Equal(t, saga.StateFailed, s.State)
 }
 
+func TestHandle_InvalidEventID_ReturnsError(t *testing.T) {
+	h, _, _, _ := newHandler()
+	ev := messaging.Event{EventID: "not-a-uuid", EventName: saga.EventOSCreated, Payload: []byte(`{}`)}
+	err := h.Handle(context.Background(), ev)
+	require.Error(t, err)
+}
+
+func TestHandle_MissingOSID_ReturnsError(t *testing.T) {
+	h, _, _, _ := newHandler()
+	ev := mustEvent(t, saga.EventOSCreated, "c", map[string]any{})
+	err := h.Handle(context.Background(), ev)
+	require.Error(t, err)
+}
+
+func TestHandle_EventForUnknownSaga_IsIgnored(t *testing.T) {
+	h, sagas, processed, _ := newHandler()
+	osID := uuid.New()
+	ev := mustEvent(t, saga.EventBudgetGenerated, "c", map[string]any{"os_id": osID.String(), "budget_id": "b1"})
+
+	require.NoError(t, h.Handle(context.Background(), ev))
+
+	_, err := sagas.FindByOSID(context.Background(), osID)
+	assert.ErrorIs(t, err, db.ErrNotFound)
+
+	eventID, err := uuid.Parse(ev.EventID)
+	require.NoError(t, err)
+	isProcessed, err := processed.IsProcessed(context.Background(), eventID)
+	require.NoError(t, err)
+	assert.True(t, isProcessed)
+}
+
+func TestHandle_DuplicateOSCreated_ForExistingSaga_IsIgnored(t *testing.T) {
+	h, sagas, _, _ := newHandler()
+	osID := uuid.New()
+	first := mustEvent(t, saga.EventOSCreated, "c", map[string]any{"os_id": osID.String()})
+	require.NoError(t, h.Handle(context.Background(), first))
+
+	second := mustEvent(t, saga.EventOSCreated, "c", map[string]any{"os_id": osID.String()})
+	require.NoError(t, h.Handle(context.Background(), second))
+
+	s, err := sagas.FindByOSID(context.Background(), osID)
+	require.NoError(t, err)
+	assert.Equal(t, saga.StateBudgetRequested, s.State)
+	assert.Len(t, sagas.outbox, 1, "no new commands should be emitted for a duplicate OSCreated")
+}
+
 func TestHandle_DuplicateEvent_IsNoOp(t *testing.T) {
 	h, sagas, processed, _ := newHandler()
 	osID := uuid.New()
