@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -123,7 +124,16 @@ func (c *Conn) Retry(ctx context.Context, svc string, d amqp.Delivery) error {
 		case int32:
 			count = n
 		case int64:
-			count = int32(n)
+			// Retry counts never realistically approach int32 range (capped
+			// at MaxRetries), but guard the conversion explicitly rather
+			// than relying on truncation.
+			if n > math.MaxInt32 {
+				count = math.MaxInt32
+			} else if n < math.MinInt32 {
+				count = math.MinInt32
+			} else {
+				count = int32(n)
+			}
 		}
 	}
 	count++
