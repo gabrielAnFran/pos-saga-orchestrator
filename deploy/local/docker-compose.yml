@@ -1,18 +1,10 @@
-# Local dev/demo stack for all 4 POS microservices.
+# Local dev/demo stack for all 4 POS microservices. Verified end-to-end
+# (happy path + compensation path) against this exact compose file.
 #
-# NOTE: as of writing, the sibling repos (../../../pos-os-service,
-# ../../../pos-billing-service, ../../../pos-production-service) only
-# contain early scaffolding (go.mod + a few domain files) — no
-# Dockerfile, no README documenting their build-arg/TARGET convention
-# yet, since they're being built concurrently by other agents. This
-# compose file is written to the best of our ability from the shared
-# spec: ports 8081/8082/8083, the env var names below, and the
-# `TARGET` build-arg convention used by this repo's own Dockerfile are
-# authoritative per that spec and are not expected to change, but this
-# file has NOT been live-verified against the sibling repos' actual
-# Dockerfiles. A human should do the final `docker-compose up` pass
-# once all 4 repos are complete, and adjust build contexts/dockerfiles
-# here if any sibling deviated from the shared convention.
+# All app services use `restart: unless-stopped` — on first boot they can
+# race RabbitMQ's healthcheck (which reports healthy slightly before the
+# AMQP listener is fully ready to accept connections) and exit once; the
+# restart policy recovers automatically within a few seconds.
 name: pos-microservices-local
 
 networks:
@@ -107,6 +99,7 @@ services:
       args:
         TARGET: tests/mock-mp
     ports: ["9999:9999"]
+    restart: unless-stopped
     networks: [pos-net]
 
   os-service:
@@ -124,6 +117,7 @@ services:
       OS_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       OS_PORT: "8081"
     ports: ["8081:8081"]
+    restart: unless-stopped
     networks: [pos-net]
 
   os-service-worker:
@@ -139,6 +133,7 @@ services:
     environment:
       OS_DB_DSN: postgres://os:os@os-postgres:5432/os_service?sslmode=disable
       OS_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    restart: unless-stopped
     networks: [pos-net]
 
   os-service-dispatcher:
@@ -154,6 +149,7 @@ services:
     environment:
       OS_DB_DSN: postgres://os:os@os-postgres:5432/os_service?sslmode=disable
       OS_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    restart: unless-stopped
     networks: [pos-net]
 
   billing-service:
@@ -174,6 +170,7 @@ services:
       BILLING_PORT: "8082"
       MP_BASE_URL: http://mp-mock:9999
     ports: ["8082:8082"]
+    restart: unless-stopped
     networks: [pos-net]
 
   billing-service-worker:
@@ -192,6 +189,7 @@ services:
       BILLING_DB_DSN: postgres://billing:billing@billing-postgres:5432/billing_service?sslmode=disable
       BILLING_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       MP_BASE_URL: http://mp-mock:9999
+    restart: unless-stopped
     networks: [pos-net]
 
   billing-service-dispatcher:
@@ -207,6 +205,7 @@ services:
     environment:
       BILLING_DB_DSN: postgres://billing:billing@billing-postgres:5432/billing_service?sslmode=disable
       BILLING_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    restart: unless-stopped
     networks: [pos-net]
 
   production-service:
@@ -224,6 +223,7 @@ services:
       PRODUCTION_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       PRODUCTION_PORT: "8083"
     ports: ["8083:8083"]
+    restart: unless-stopped
     networks: [pos-net]
 
   production-service-worker:
@@ -239,6 +239,7 @@ services:
     environment:
       PRODUCTION_MONGO_URI: mongodb://production-mongo:27017/production?replicaSet=rs0
       PRODUCTION_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    restart: unless-stopped
     networks: [pos-net]
 
   saga-orchestrator:
@@ -257,6 +258,7 @@ services:
       SAGA_PORT: "8084"
       OS_SERVICE_URL: http://os-service:8081
     ports: ["8084:8084"]
+    restart: unless-stopped
     networks: [pos-net]
 
   saga-orchestrator-worker:
@@ -273,6 +275,7 @@ services:
       SAGA_DB_DSN: postgres://saga:saga@saga-postgres:5432/saga_orchestrator?sslmode=disable
       SAGA_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       OS_SERVICE_URL: http://os-service:8081
+    restart: unless-stopped
     networks: [pos-net]
 
   saga-orchestrator-dispatcher:
@@ -289,4 +292,5 @@ services:
       SAGA_DB_DSN: postgres://saga:saga@saga-postgres:5432/saga_orchestrator?sslmode=disable
       SAGA_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       SAGA_DISPATCH_INTERVAL_MS: "500"
+    restart: unless-stopped
     networks: [pos-net]
