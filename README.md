@@ -138,20 +138,36 @@ No command endpoints: this service is purely event/query driven.
 ## Testing
 
 ```bash
-make test        # unit + use-case tests + BDD
-make test-bdd     # godog BDD only
-make coverage     # coverage on internal/domain/saga + internal/application/usecases
+make test              # unit + use-case tests + BDD
+make test-bdd           # godog BDD only
+make test-integration   # testcontainers-go: real Postgres + RabbitMQ (build tag `integration`)
+make coverage           # coverage on internal/domain/saga + internal/application/usecases
 ```
 
-`internal/domain/saga` (the state machine itself): **86.6%** statement
-coverage, exhaustively covering every table row plus 5 invalid-transition
-cases. `internal/application/usecases` (event-handling workflow):
-**64.2%**. Infrastructure adapters (`db`, `messaging`, `http`, `config`,
-`handlers`) have no dedicated unit tests — they're thin GORM/Gin/HTTP
-glue exercised via the BDD suite's design intent and, for a full
-integration pass, `deploy/local`; not covered by `go tool cover` since
-there's no dependency injection seam exercised in-process. `go build
-./...` and `go test ./...` are both green with no build tags.
+Coverage measured 2026-07-26 via `go test -tags=integration ./... -coverpkg=./...
+-coverprofile=coverage.out` (unit + integration together — the same command
+CI's `test` job runs): **68.3%** of statements total. Below 80% because it
+includes `cmd/server`, `cmd/worker`, `cmd/outbox-dispatcher` (main() wiring,
+deliberately untested). What matters for correctness is well above 80%:
+
+| Package | Coverage | How |
+|---|---|---|
+| `internal/domain/saga` (state machine) | 86.6% | unit — every transition-table row + 5 invalid-transition cases |
+| `internal/application/usecases` | 72.6% | unit |
+| `internal/infrastructure/config` | 100% | unit |
+| `internal/infrastructure/http` (`OSNotifier`) | 87.5% | unit (httptest) |
+| `internal/presentation/handlers` | 100% | unit (httptest + fakes) |
+| `internal/infrastructure/db` | folded into 68.3% total | integration (testcontainers) |
+| `internal/infrastructure/messaging` | folded into 68.3% total | integration (testcontainers) |
+| `cmd/*` | 0% | out of scope (wiring) |
+
+`tests/integration/saga_flow_test.go` (testcontainers-go, real Postgres +
+RabbitMQ) covers `SagaRepository.Create`/`ApplyTransition` (happy path +
+compensation), `FindByOSID`/`FindByID`/`List`/`History`/`StuckSagas`, the
+outbox/processed-events repos, the shared `messaging.Conn` helper
+(publish/consume/retry/DLQ), and `HandleEvent.Handle` end-to-end for the
+`OSCreated` → saga-creation path including idempotent duplicate delivery.
+`go build ./...` and `go test -tags=integration ./...` are both green.
 
 ## Running locally
 
