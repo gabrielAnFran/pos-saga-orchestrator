@@ -112,6 +112,11 @@ exhaustively covered by `internal/domain/saga/state_machine_test.go`.
   RabbitMQ.
 - `docs/adr` — architecture decision records.
 - `docs/events` — JSON Schema for every event/command on the wire.
+- `docs/postman/collection.json` — Postman collection covering all 4
+  services' REST endpoints, plus two chained folders (happy path,
+  compensation) that auto-capture `os_id`/`budget_id`/`saga_id` across
+  requests via test scripts. Verified end-to-end against the local
+  docker-compose stack via `newman`.
 - `tests/bdd` — godog feature files exercising the pure state machine.
 - `deploy/local` — docker-compose for the full 4-service local stack.
 - `charts/saga-orchestrator` — Helm chart (3 Deployments + Service +

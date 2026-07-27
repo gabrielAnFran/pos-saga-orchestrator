@@ -1,0 +1,403 @@
+{
+  "info": {
+    "name": "POS Microservices — Challenge 4",
+    "description": "Coleção consolidada dos 4 microsserviços da oficina mecânica (OS Service, Billing Service, Production Service, Saga Orchestrator). As pastas 1 e 2 encadeiam requisições automaticamente via variáveis de coleção (os_id, budget_id, saga_id) capturadas por test scripts — rode em sequência com 'Run collection' ou uma a uma. A pasta 3 lista todos os endpoints individualmente, por serviço, para referência/exploração livre.\n\nPré-requisito: stack local rodando via `docker compose up -d` em `pos-saga-orchestrator/deploy/local` (ver README daquele diretório). Portas: OS 8081, Billing 8082, Production 8083, Saga Orchestrator 8084, mock Mercado Pago 9999.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "os_base", "value": "http://localhost:8081/api/v1" },
+    { "key": "billing_base", "value": "http://localhost:8082/api/v1" },
+    { "key": "production_base", "value": "http://localhost:8083/api/v1" },
+    { "key": "saga_base", "value": "http://localhost:8084/api/v1" },
+    { "key": "mp_mock_base", "value": "http://localhost:9999" },
+    { "key": "os_id", "value": "" },
+    { "key": "budget_id", "value": "" },
+    { "key": "saga_id", "value": "" },
+    { "key": "mp_preference_id", "value": "", "description": "Preencher manualmente após consultar via psql (não há endpoint REST para listar pagamentos por budget_id) — ver descrição da requisição 'Simular Webhook MP' nesta pasta." }
+  ],
+  "item": [
+    {
+      "name": "1. Fluxo Feliz (encadeado)",
+      "item": [
+        {
+          "name": "1.1 Criar Ordem de Serviço",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('os_id', body.os_id);",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('status is CREATED', () => pm.expect(body.status).to.eql('CREATED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_id\": \"{{$guid}}\",\n  \"vehicle_id\": \"{{$guid}}\",\n  \"description\": \"Troca de óleo e revisão\"\n}"
+            },
+            "url": { "raw": "{{os_base}}/orders", "host": ["{{os_base}}"], "path": ["orders"] }
+          }
+        },
+        {
+          "name": "1.2 Ver Saga criada automaticamente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.sagas && body.sagas.length > 0) {",
+                  "  pm.collectionVariables.set('budget_id', body.sagas[0].Context.budget_id);",
+                  "  pm.collectionVariables.set('saga_id', body.sagas[0].ID);",
+                  "}",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('saga reached AWAITING_APPROVAL', () => pm.expect(body.sagas[0].State).to.eql('AWAITING_APPROVAL'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{saga_base}}/sagas?os_id={{os_id}}",
+              "host": ["{{saga_base}}"], "path": ["sagas"],
+              "query": [{ "key": "os_id", "value": "{{os_id}}" }]
+            },
+            "description": "Espere ~2s após criar a ordem antes de rodar (o worker do orquestrador consome o evento OSCreated de forma assíncrona)."
+          }
+        },
+        {
+          "name": "1.3 Aprovar Orçamento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status is APPROVED', () => pm.expect(pm.response.json().status).to.eql('APPROVED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"approved_by\": \"postman-demo\"\n}" },
+            "url": { "raw": "{{billing_base}}/budgets/{{budget_id}}/approve", "host": ["{{billing_base}}"], "path": ["budgets", "{{budget_id}}", "approve"] }
+          }
+        },
+        {
+          "name": "1.4 Simular Webhook MP — aprovado",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"preference_id\": \"{{mp_preference_id}}\",\n  \"status\": \"approved\"\n}" },
+            "url": { "raw": "{{mp_mock_base}}/simulate-webhook", "host": ["{{mp_mock_base}}"], "path": ["simulate-webhook"] },
+            "description": "IMPORTANTE: preencha a variável de coleção `mp_preference_id` antes de rodar. Não existe endpoint REST para listar pagamentos por budget_id, então pegue via banco:\n\n```\ndocker exec pos-microservices-local-billing-postgres-1 psql -U billing -d billing_service -tA -c \"select mp_preference_id from payments where budget_id='{{budget_id}}';\"\n```"
+          }
+        },
+        {
+          "name": "1.5 Ver Saga em IN_EXECUTION + Execução criada",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{saga_base}}/sagas?os_id={{os_id}}", "host": ["{{saga_base}}"], "path": ["sagas"], "query": [{ "key": "os_id", "value": "{{os_id}}" }] },
+            "description": "Espere ~2s após o webhook. Em paralelo, GET {{production_base}}/executions/{{os_id}} deve mostrar status DIAGNOSING."
+          }
+        },
+        {
+          "name": "1.6 Avançar Execução — REPAIRING",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"REPAIRING\"\n}" },
+            "url": { "raw": "{{production_base}}/executions/{{os_id}}", "host": ["{{production_base}}"], "path": ["executions", "{{os_id}}"] }
+          }
+        },
+        {
+          "name": "1.7 Concluir Execução — COMPLETED",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"COMPLETED\",\n  \"notes\": \"Troca de óleo concluída\"\n}" },
+            "url": { "raw": "{{production_base}}/executions/{{os_id}}", "host": ["{{production_base}}"], "path": ["executions", "{{os_id}}"] }
+          }
+        },
+        {
+          "name": "1.8 Confirmar Saga COMPLETED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('saga is COMPLETED', () => pm.expect(pm.response.json().sagas[0].State).to.eql('COMPLETED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{saga_base}}/sagas?os_id={{os_id}}", "host": ["{{saga_base}}"], "path": ["sagas"], "query": [{ "key": "os_id", "value": "{{os_id}}" }] }
+          }
+        },
+        {
+          "name": "1.9 Confirmar Ordem de Serviço COMPLETED (com histórico)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order is COMPLETED', () => pm.expect(pm.response.json().status).to.eql('COMPLETED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{os_base}}/orders/{{os_id}}", "host": ["{{os_base}}"], "path": ["orders", "{{os_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Fluxo de Compensação (encadeado)",
+      "item": [
+        {
+          "name": "2.1 Criar Ordem de Serviço",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('os_id', body.os_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"customer_id\": \"{{$guid}}\",\n  \"vehicle_id\": \"{{$guid}}\",\n  \"description\": \"Troca de embreagem\"\n}" },
+            "url": { "raw": "{{os_base}}/orders", "host": ["{{os_base}}"], "path": ["orders"] }
+          }
+        },
+        {
+          "name": "2.2 Ver Saga + capturar budget_id/saga_id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.sagas && body.sagas.length > 0) {",
+                  "  pm.collectionVariables.set('budget_id', body.sagas[0].Context.budget_id);",
+                  "  pm.collectionVariables.set('saga_id', body.sagas[0].ID);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{saga_base}}/sagas?os_id={{os_id}}", "host": ["{{saga_base}}"], "path": ["sagas"], "query": [{ "key": "os_id", "value": "{{os_id}}" }] },
+            "description": "Espere ~2s antes de rodar."
+          }
+        },
+        {
+          "name": "2.3 Aprovar Orçamento",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"approved_by\": \"postman-demo\"\n}" },
+            "url": { "raw": "{{billing_base}}/budgets/{{budget_id}}/approve", "host": ["{{billing_base}}"], "path": ["budgets", "{{budget_id}}", "approve"] }
+          }
+        },
+        {
+          "name": "2.4 Simular Webhook MP — RECUSADO",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"preference_id\": \"{{mp_preference_id}}\",\n  \"status\": \"rejected\"\n}" },
+            "url": { "raw": "{{mp_mock_base}}/simulate-webhook", "host": ["{{mp_mock_base}}"], "path": ["simulate-webhook"] },
+            "description": "Mesma ressalva da 1.4: preencha `mp_preference_id` via consulta ao banco antes de rodar."
+          }
+        },
+        {
+          "name": "2.5 Confirmar saga FAILED (com trilha de compensação completa)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('saga is FAILED', () => pm.expect(pm.response.json().saga.State).to.eql('FAILED'));",
+                  "pm.test('history has PaymentFailed -> COMPENSATING', () => {",
+                  "  const h = pm.response.json().history;",
+                  "  pm.expect(h.some(e => e.EventName === 'PaymentFailed' && e.ToState === 'COMPENSATING')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{saga_base}}/sagas/{{saga_id}}", "host": ["{{saga_base}}"], "path": ["sagas", "{{saga_id}}"] },
+            "description": "Espere ~5s — a cadeia de compensação (PaymentFailed → COMPENSATING → CancelBudgetCommand → BudgetCancelled → CANCEL_OS_REQUESTED → CancelOSCommand → OSCancelled → FAILED) passa por vários hops assíncronos."
+          }
+        },
+        {
+          "name": "2.6 Confirmar Ordem CANCELLED (com motivo no histórico)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order is CANCELLED', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{os_base}}/orders/{{os_id}}", "host": ["{{os_base}}"], "path": ["orders", "{{os_id}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Endpoints por Serviço (referência)",
+      "item": [
+        {
+          "name": "OS Service",
+          "item": [
+            {
+              "name": "POST /orders",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Idempotency-Key", "value": "{{$guid}}" }],
+                "body": { "mode": "raw", "raw": "{\n  \"customer_id\": \"{{$guid}}\",\n  \"vehicle_id\": \"{{$guid}}\",\n  \"description\": \"...\"\n}" },
+                "url": { "raw": "{{os_base}}/orders", "host": ["{{os_base}}"], "path": ["orders"] }
+              }
+            },
+            { "name": "GET /orders/:id", "request": { "method": "GET", "url": { "raw": "{{os_base}}/orders/{{os_id}}", "host": ["{{os_base}}"], "path": ["orders", "{{os_id}}"] } } },
+            { "name": "GET /orders (list, paginado)", "request": { "method": "GET", "url": { "raw": "{{os_base}}/orders?limit=20", "host": ["{{os_base}}"], "path": ["orders"], "query": [{ "key": "limit", "value": "20" }] } } },
+            {
+              "name": "PATCH /orders/:id/status (interno)",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"status\": \"BUDGETING\"\n}" },
+                "url": { "raw": "{{os_base}}/orders/{{os_id}}/status", "host": ["{{os_base}}"], "path": ["orders", "{{os_id}}", "status"] }
+              }
+            },
+            { "name": "GET /healthz", "request": { "method": "GET", "url": { "raw": "http://localhost:8081/healthz", "host": ["http://localhost:8081"], "path": ["healthz"] } } },
+            { "name": "GET /readyz", "request": { "method": "GET", "url": { "raw": "http://localhost:8081/readyz", "host": ["http://localhost:8081"], "path": ["readyz"] } } }
+          ]
+        },
+        {
+          "name": "Billing Service",
+          "item": [
+            { "name": "GET /budgets/:id", "request": { "method": "GET", "url": { "raw": "{{billing_base}}/budgets/{{budget_id}}", "host": ["{{billing_base}}"], "path": ["budgets", "{{budget_id}}"] } } },
+            {
+              "name": "POST /budgets/:id/approve",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"approved_by\": \"...\"\n}" },
+                "url": { "raw": "{{billing_base}}/budgets/{{budget_id}}/approve", "host": ["{{billing_base}}"], "path": ["budgets", "{{budget_id}}", "approve"] }
+              }
+            },
+            {
+              "name": "POST /budgets/:id/reject",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"reason\": \"...\"\n}" },
+                "url": { "raw": "{{billing_base}}/budgets/{{budget_id}}/reject", "host": ["{{billing_base}}"], "path": ["budgets", "{{budget_id}}", "reject"] }
+              }
+            },
+            {
+              "name": "POST /webhooks/mercadopago",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"action\": \"payment.updated\",\n  \"data\": { \"id\": \"<mp_payment_id>\" }\n}" },
+                "url": { "raw": "{{billing_base}}/webhooks/mercadopago", "host": ["{{billing_base}}"], "path": ["webhooks", "mercadopago"] },
+                "description": "Webhook real do Mercado Pago (HMAC verificado via header X-Signature se MP_WEBHOOK_SECRET estiver configurado). Para demo local, use o mock em '1.4 Simular Webhook MP' em vez desta."
+              }
+            },
+            { "name": "GET /payments/:id", "request": { "method": "GET", "url": { "raw": "{{billing_base}}/payments/:payment_id", "host": ["{{billing_base}}"], "path": ["payments", ":payment_id"], "variable": [{ "key": "payment_id", "value": "" }] } } },
+            { "name": "GET /healthz", "request": { "method": "GET", "url": { "raw": "{{billing_base}}/healthz", "host": ["{{billing_base}}"], "path": ["healthz"] } } }
+          ]
+        },
+        {
+          "name": "Production Service",
+          "item": [
+            { "name": "GET /executions/:os_id", "request": { "method": "GET", "url": { "raw": "{{production_base}}/executions/{{os_id}}", "host": ["{{production_base}}"], "path": ["executions", "{{os_id}}"] } } },
+            {
+              "name": "PATCH /executions/:os_id",
+              "request": {
+                "method": "PATCH",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"status\": \"REPAIRING\",\n  \"notes\": \"...\"\n}" },
+                "url": { "raw": "{{production_base}}/executions/{{os_id}}", "host": ["{{production_base}}"], "path": ["executions", "{{os_id}}"] }
+              }
+            },
+            { "name": "GET /healthz", "request": { "method": "GET", "url": { "raw": "http://localhost:8083/healthz", "host": ["http://localhost:8083"], "path": ["healthz"] } } }
+          ]
+        },
+        {
+          "name": "Saga Orchestrator",
+          "item": [
+            { "name": "GET /sagas/:id", "request": { "method": "GET", "url": { "raw": "{{saga_base}}/sagas/{{saga_id}}", "host": ["{{saga_base}}"], "path": ["sagas", "{{saga_id}}"] } } },
+            { "name": "GET /sagas?os_id=", "request": { "method": "GET", "url": { "raw": "{{saga_base}}/sagas?os_id={{os_id}}", "host": ["{{saga_base}}"], "path": ["sagas"], "query": [{ "key": "os_id", "value": "{{os_id}}" }] } } },
+            { "name": "GET /healthz", "request": { "method": "GET", "url": { "raw": "http://localhost:8084/healthz", "host": ["http://localhost:8084"], "path": ["healthz"] } } }
+          ]
+        },
+        {
+          "name": "Mock Mercado Pago (local)",
+          "item": [
+            {
+              "name": "POST /checkout/preferences",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"items\": [{ \"title\": \"...\", \"unit_price\": 100 }],\n  \"external_reference\": \"{{budget_id}}\"\n}" },
+                "url": { "raw": "{{mp_mock_base}}/checkout/preferences", "host": ["{{mp_mock_base}}"], "path": ["checkout", "preferences"] }
+              }
+            },
+            {
+              "name": "POST /simulate-webhook",
+              "request": {
+                "method": "POST",
+                "header": [{ "key": "Content-Type", "value": "application/json" }],
+                "body": { "mode": "raw", "raw": "{\n  \"preference_id\": \"{{mp_preference_id}}\",\n  \"status\": \"approved\"\n}" },
+                "url": { "raw": "{{mp_mock_base}}/simulate-webhook", "host": ["{{mp_mock_base}}"], "path": ["simulate-webhook"] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
